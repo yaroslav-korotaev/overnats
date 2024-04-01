@@ -1,0 +1,29 @@
+{
+  "name": "overnats",
+  "version": "0.1.0",
+  "description": "",
+  "keywords": [],
+  "bugs": "https://github.com/yaroslav-korotaev/overnats/issues",
+  "license": "MIT",
+  "author": "Yaroslav Korotaev <yaroslav.korotaev@gmail.com>",
+  "files": [
+    "dist",
+    "src"
+  ],
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "repository": "yaroslav-korotaev/overnats",
+  "scripts": {
+    "build": "tsc"
+  },
+  "dependencies": {
+    "erroar": "^2.0.0",
+    "fast-json-stable-stringify": "^2.1.0",
+    "nanoid": "^5.0.7",
+    "nats": "^2.21.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.12.5",
+    "typescript": "^5.4.4"
+  }
+}
