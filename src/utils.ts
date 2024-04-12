@@ -1,47 +1,12 @@
 import crypto from 'node:crypto';
 import stringify from 'fast-json-stable-stringify';
 import { customAlphabet } from 'nanoid';
-import { NatsError } from 'nats';
-import { type AsyncCallback, type ErrorCallback, type Trapdoor } from './types';
-
-export class Mutex {
-  private _queue: AsyncCallback[];
-  private _busy: boolean;
-  
-  constructor() {
-    this._queue = [];
-    this._busy = false;
-    this._next = this._next.bind(this);
-  }
-  
-  private _next(): void {
-    if (this._queue.length == 0) {
-      this._busy = false;
-      return;
-    }
-    
-    this._busy = true;
-    const callback = this._queue.shift()!;
-    callback().then(this._next);
-  }
-  
-  public async lock(callback: AsyncCallback): Promise<void> {
-    return new Promise((resolve, reject) => {
-      this._queue.push(async () => {
-        try {
-          await callback();
-          resolve();
-        } catch (err) {
-          reject(err);
-        }
-      });
-      
-      if (!this._busy) {
-        this._next();
-      }
-    });
-  }
-}
+import {
+  type MsgHdrs,
+  NatsError,
+  headers as createHeaders,
+} from 'nats';
+import { type Headers } from './types';
 
 export function hashOf(value: unknown | undefined): string {
   if (value == undefined) {
@@ -132,104 +97,6 @@ export function isWrongLastSequenceError(err: unknown): boolean {
   return !!(err && err instanceof NatsError && err.api_error && err.api_error.err_code == 10071);
 }
 
-export async function tryWithFallback<T>(
-  callback: () => Promise<T>,
-  fallback: (err: unknown) => Promise<T>,
-): Promise<T> {
-  try {
-    return await callback();
-  } catch (err) {
-    return await fallback(err);
-  }
-}
-
-export async function anyway<T>(
-  callback: () => Promise<T>,
-  cleanup: () => Promise<void>,
-): Promise<T> {
-  let result: T;
-  
-  try {
-    result = await callback();
-  } catch (err) {
-    await cleanup();
-    
-    throw err;
-  }
-  
-  await cleanup();
-  
-  return result;
-}
-
-export type RetryOptions = {
-  when: (err: unknown, retry: number) => boolean;
-  retries: number;
-  signal?: AbortSignal;
-  minDelay: number;
-  maxDelay: number;
-  factor: number;
-  jitter: number;
-};
-
-export async function retry<T>(
-  callback: () => Promise<T>,
-  options?: Partial<RetryOptions>,
-): Promise<T> {
-  const {
-    when = () => true,
-    retries = 10,
-    signal,
-    minDelay = 250,
-    maxDelay = 120_000,
-    factor = 1.5,
-    jitter = 0.1,
-  } = options ?? {};
-  
-  let abort: ErrorCallback | undefined = undefined;
-  let alive = true;
-  let retry = 0;
-  
-  if (signal) {
-    signal.addEventListener('abort', event => {
-      if (abort) {
-        abort(signal.reason ?? new Error('aborted'));
-      }
-      
-      alive = false;
-    });
-  }
-  
-  while (true) {
-    try {
-      return await callback();
-    } catch (err) {
-      if (alive && retry < retries && when(err, retry)) {
-        const raw = minDelay * Math.pow(factor, retry);
-        const limited = Math.min(raw, maxDelay);
-        const jittered = limited * (1 - jitter + Math.random() * (jitter * 2));
-        const delay = Math.round(jittered);
-        
-        await new Promise<void>((resolve, reject) => {
-          const timeout = setTimeout(() => {
-            abort = undefined;
-            resolve();
-          }, delay);
-          
-          abort = err => {
-            clearTimeout(timeout);
-            reject(err);
-          };
-        });
-        
-        retry++;
-      } else {
-        throw err;
-      }
-    }
-  }
-}
-
 export function rootCause(err: unknown): unknown {
   while (err instanceof Error && err.cause) {
     err = err.cause;
@@ -242,4 +109,40 @@ export type CompareCallback<T> = (a: T, b: T) => boolean;
 
 export function defaultCompare<T>(a: T, b: T): boolean {
   return hashOf(a) == hashOf(b);
+}
+
+export function toHeaders(headers: Headers): MsgHdrs {
+  const result = createHeaders();
+  const keys = Object.keys(headers);
+  
+  for (const key of keys) {
+    const value = headers[key];
+    
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        result.append(key, item);
+      }
+    } else {
+      result.set(key, value);
+    }
+  }
+  
+  return result;
+}
+
+export function fromHeaders(headers: MsgHdrs): Headers {
+  const result: Headers = {};
+  const keys = headers.keys();
+  
+  for (const key of keys) {
+    const values = headers.values(key);
+    
+    if (values.length == 1) {
+      result[key] = values[0];
+    } else {
+      result[key] = values;
+    }
+  }
+  
+  return result;
 }

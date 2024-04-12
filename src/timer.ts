@@ -1,15 +1,15 @@
-import { type Backend } from './backend';
+import { type Core } from './core';
 
 export type TimerCallback = (now: number) => Promise<void>;
 
 export type TimerOptions = {
-  backend: Backend;
+  core: Core;
   interval: number;
   callback: TimerCallback;
 };
 
 export class Timer {
-  private _backend: Backend;
+  private _core: Core;
   private _started: number;
   private _interval: number;
   private _callback: TimerCallback;
@@ -18,7 +18,7 @@ export class Timer {
   
   constructor(options: TimerOptions) {
     const {
-      backend,
+      core,
       interval,
       callback,
     } = options;
@@ -26,7 +26,7 @@ export class Timer {
     this._schedule = this._schedule.bind(this);
     this._tick = this._tick.bind(this);
     
-    this._backend = backend;
+    this._core = core;
     this._started = Date.now();
     this._interval = interval;
     this._callback = callback;
@@ -54,9 +54,7 @@ export class Timer {
     this._callback(now)
       .then(this._schedule)
       .catch(err => {
-        console.log('timer callback error catched', { err });
-        
-        this._backend.uncaughtException(err);
+        this._core.uncaughtException(err);
         this._schedule();
       })
     ;

@@ -1,27 +1,45 @@
+import { type Telemetry } from 'universe-types';
+import { type ErrorCallback } from 'ominous';
 import { connect as natsConnect } from 'nats';
-import { type ErrorCallback, type OvernatsGlobalOptions } from './types';
-import { Backend } from './backend';
+import { type OvernatsGlobalOptions } from './types';
+import { Core } from './core';
 import { App } from './app';
 
-export type ConnectOptions = {
+export type ConnectParams = {
+  telemetry: Telemetry;
+  token?: string;
+  username?: string;
+  password?: string;
+  servers?: string | string[];
   options?: Partial<OvernatsGlobalOptions>;
   uncaughtException?: ErrorCallback;
 };
 
-export async function connect(name: string, options?: ConnectOptions): Promise<App> {
+export async function connect(params: ConnectParams): Promise<App> {
   const {
+    telemetry,
+    token,
+    username,
+    password,
+    servers,
     options: globalOptions,
     uncaughtException = console.error,
-  } = options ?? {};
+  } = params;
   
-  const core = await natsConnect();
-  const backend = new Backend({
-    core,
+  const nats = await natsConnect({
+    token,
+    user: username,
+    pass: password,
+    servers,
+  });
+  const core = new Core({
+    telemetry,
+    nats,
     options: globalOptions,
     uncaughtException,
   });
   
-  await backend.init();
+  await core.init();
   
-  return new App({ backend, name });
+  return new App({ core });
 }

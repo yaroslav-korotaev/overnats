@@ -1,17 +1,17 @@
-import { type Destructible } from './types';
+import { type Destructible, Mutex } from 'ominous';
 import { OvernatsError } from './errors';
-import { Mutex, hashOf } from './utils';
+import { hashOf } from './utils';
 
-export type SpawnCallback<T, I extends Destructible> = (key: string, value: T) => Promise<I>;
+export type SpawnerCallback<T, I extends Destructible> = (key: string, value: T) => Promise<I>;
 
 export type ForEachCallback<I> = (item: I) => Promise<void>;
 
 export type SpawnerOptions<T, I extends Destructible> = {
-  callback: SpawnCallback<T, I>;
+  callback: SpawnerCallback<T, I>;
 };
 
 export class Spawner<T, I extends Destructible> {
-  private _callback: SpawnCallback<T, I>;
+  private _callback: SpawnerCallback<T, I>;
   private _mutex: Mutex;
   private _items: Map<string, { hash: string, item: I }>;
   

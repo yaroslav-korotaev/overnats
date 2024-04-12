@@ -1,9 +1,15 @@
-import { type AsyncCallback, type ReturnCallback, type Destructible } from './types';
-import { type RetryOptions } from './utils';
-import { Autodestructible } from './autodestructible';
-import { type Backend } from './backend';
+import { type Telemetry } from 'universe-types';
+import {
+  type Callback,
+  type Destructible,
+  type SpawnCallback,
+  type RetryOptions,
+  Container,
+} from 'ominous';
+import { type Core } from './core';
 import { type SchedulerCallback, type Scheduler } from './scheduler';
 import { type TimerCallback, type Timer } from './timer';
+import { type MutexCell } from './multimutex';
 import { type SubscriptionCallback, type Subscription } from './subscription';
 import { type Service } from './service';
 import {
@@ -13,50 +19,93 @@ import {
   type BucketCell,
 } from './bucket';
 import { type SummonCallback, type SummonerMoreOptions, type Summoner } from './summoner';
-import { type SpawnCallback, type Spawner } from './spawner';
-import { type ProducerSpawnCallback, type Producer } from './producer';
-import { type ConsumerCallback, type Consumer } from './consumer';
+import { type SpawnerCallback, type Spawner } from './spawner';
+
+export type ClientStackParams = {
+  telemetry: Telemetry;
+  core: Core;
+  name: string;
+  container: Container;
+};
+
+export class ClientStack {
+  public telemetry: Telemetry;
+  public core: Core;
+  public name: string;
+  public container: Container;
+  
+  constructor(params: ClientStackParams) {
+    const {
+      telemetry,
+      core,
+      name,
+      container,
+    } = params;
+    
+    this.telemetry = telemetry;
+    this.core = core;
+    this.name = name;
+    this.container = container;
+  }
+  
+  protected async _use<T extends Destructible>(spawn: SpawnCallback<T>): Promise<T> {
+    return this.container.use(spawn);
+  }
+  
+  public async init(): Promise<void> {
+    // no-op
+  }
+  
+  public async destroy(): Promise<void> {
+    await this.container.destroy();
+    this.telemetry.destroy();
+  }
+}
 
 export type ClientSubscribeOptions = {
   broadcast?: boolean;
 };
 
-export type ClientOptions = {
-  backend: Backend;
-  name: string;
-};
+export type ClientParams = ClientStackParams;
 
-export class Client extends Autodestructible {
-  protected _backend: Backend;
-  protected _name: string;
-  protected _bucket: Bucket<unknown> | undefined;
+export class Client extends ClientStack {
+  private _bucket: Bucket<unknown> | undefined;
   
   public local: ClientLocal;
   
-  constructor(options: ClientOptions) {
-    super();
+  constructor(params: ClientParams) {
+    super(params);
     
-    const {
-      backend,
-      name,
-    } = options;
+    this._bucket = undefined;
     
-    this._backend = backend;
-    this._name = name;
-    
-    this.local = this.use(new ClientLocal({ backend, name }));
+    this.local = this._local();
+  }
+  
+  protected _local(): ClientLocal {
+    return new ClientLocal({
+      telemetry: this.telemetry,
+      core: this.core,
+      name: this.name,
+      container: this.container,
+    });
   }
   
   protected async _getDefaultBucket(): Promise<Bucket<unknown>> {
     if (!this._bucket) {
-      this._bucket = this.use(await this.bucket('default'));
+      this._bucket = await this._use(async () => {
+        return await this.core.bucket('default');
+      });
     }
     
     return this._bucket;
   }
   
+  public mutex(key: string): MutexCell {
+    return this.core.mutex(`app.${this.name}.${key}`);
+  }
+  
   public async publish<T>(subject: string, data: T): Promise<void> {
-    await this._backend.publish(`app.${subject}`, data);
+    await this.core.publish(`app.${subject}`, data);
   }
   
   public async subscribe<T>(
@@ -64,35 +113,41 @@ export class Client extends Autodestructible {
     callback: SubscriptionCallback<T>,
     options?: ClientSubscribeOptions,
   ): Promise<Subscription<T>> {
-    const prefix = `app.${this._name}`;
-    const subscription = await this._backend.subscribe<T>(`${prefix}.${subject}`, async event => {
-      await callback({ ...event, subject: event.subject.slice(prefix.length + 1) });
-    }, {
-      queue: (options?.broadcast) ? undefined : this._name,
+    return await this._use(async () => {
+      const prefix = `app.${this.name}`;
+      const subscription = await this.core.subscribe<T>(`${prefix}.${subject}`, async event => {
+        await callback({ ...event, subject: event.subject.slice(prefix.length + 1) });
+      }, {
+        queue: (options?.broadcast) ? undefined : this.name,
+      });
+      
+      return subscription;
     });
-    
-    return this.use(subscription);
   }
   
   public async call<P, R>(method: string, params: P): Promise<R> {
-    return await this._backend.call(`app.${method}`, params);
+    return await this.core.call(`app.${method}`, params);
   }
   
   public async service(name: string): Promise<Service> {
-    const serviceName = `app.${this._name}.${name}`;
-    const service = await this._backend.service(serviceName);
-    
-    return this.use(service);
+    return await this._use(async () => {
+      const serviceName = `app.${this.name}.${name}`;
+      const service = await this.core.service(serviceName);
+      
+      return service;
+    });
   }
   
   public async bucket<T>(
     name: string,
     options?: Partial<BucketBackendOptions>,
   ): Promise<Bucket<T>> {
-    const bucketName = `app.${this._name}.${name}`;
-    const bucket = await this._backend.bucket<T>(bucketName, options);
-    
-    return this.use(bucket);
+    return await this._use(async () => {
+      const bucketName = `app.${this.name}.${name}`;
+      const bucket = await this.core.bucket<T>(bucketName, options);
+      
+      return bucket;
+    });
   }
   
   public async slice<T>(prefix: string): Promise<BucketSlice<T>> {
@@ -107,85 +162,55 @@ export class Client extends Autodestructible {
     return bucket.cell(key);
   }
   
-  public async lock(key: string, callback: AsyncCallback): Promise<void> {
-    await this._backend.globalLock(`app.${this._name}.${key}`, callback);
-  }
-  
   public async spawner<T, I extends Destructible>(
-    callback: SpawnCallback<T, I>,
+    callback: SpawnerCallback<T, I>,
   ): Promise<Spawner<T, I>> {
-    const spawner = await this._backend.spawner(callback);
-    
-    return this.use(spawner);
+    return await this._use(async () => {
+      const spawner = await this.core.spawner<T, I>(callback);
+      
+      return spawner;
+    });
   }
   
   public async summoner<P>(
     callback: SummonCallback<P>,
     options?: SummonerMoreOptions<P>,
   ): Promise<Summoner<P>> {
-    const summoner = await this._backend.summoner<P>(callback, options);
-    
-    return this.use(summoner);
-  }
-  
-  public async producer<P, E>(
-    name: string,
-    callback: ProducerSpawnCallback<P, E>,
-  ): Promise<Producer<P, E>> {
-    const producer = await this._backend.producer<P, E>(`${this._name}.${name}`, callback);
-    
-    return this.use(producer);
-  }
-  
-  public async consumer<P, E>(
-    name: string,
-    producer: string,
-    params: P,
-    callback: ConsumerCallback<E>,
-  ): Promise<Consumer<P, E>> {
-    const consumer = await this._backend.consumer<P, E>(name, producer, params, callback);
-    
-    return this.use(consumer);
+    return await this._use(async () => {
+      const summoner = await this.core.summoner<P>(callback, options);
+      
+      return summoner;
+    });
   }
 }
 
-export type ClientLocalOptions = {
-  backend: Backend;
-  name: string;
-};
+export type ClientLocalParams = ClientStackParams;
 
-export class ClientLocal extends Autodestructible {
-  private _backend: Backend;
-  private _name: string;
-  
-  constructor(options: ClientLocalOptions) {
-    super();
-    
-    const {
-      backend,
-      name,
-    } = options;
-    
-    this._backend = backend;
-    this._name = name;
+export class ClientLocal extends ClientStack {
+  constructor(params: ClientLocalParams) {
+    super(params);
   }
   
   public async retry<T>(
-    callback: ReturnCallback<T>,
+    callback: Callback<T>,
     options?: Partial<RetryOptions>,
   ): Promise<T> {
-    return await this._backend.retry(callback, options);
+    return await this.core.retry(callback, options);
   }
   
   public async scheduler(name: string, callback: SchedulerCallback): Promise<Scheduler> {
-    const scheduler = await this._backend.localScheduler(`${this._name}.${name}`, callback);
-    
-    return this.use(scheduler);
+    return await this._use(async () => {
+      const scheduler = await this.core.localScheduler(`${this.name}.${name}`, callback);
+      
+      return scheduler;
+    });
   }
   
   public async timer(name: string, interval: number, callback: TimerCallback): Promise<Timer> {
-    const timer = await this._backend.localTimer(name, interval, callback);
-    
-    return this.use(timer);
+    return await this._use(async () => {
+      const timer = await this.core.localTimer(name, interval, callback);
+      
+      return timer;
+    });
   }
 }

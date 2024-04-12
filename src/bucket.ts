@@ -1,14 +1,12 @@
 import { type KV, StorageType } from 'nats';
-import { type AsyncCallback, type MutateCallback, type MutateUsingCallback } from './types';
-import { OvernatsError } from './errors';
-import { isWrongLastSequenceError, tryWithFallback, anyway, retry } from './utils';
 import { Autodestructible } from './autodestructible';
-import { type Backend } from './backend';
+import { type Core } from './core';
 import { type WatcherCallback, Watcher } from './watcher';
 
-export type BucketMutateOptions = {
-  revision?: number;
-};
+export type BucketMutateCallback<T, R> = (
+  value: T | undefined,
+  write: (next: T) => Promise<T>,
+) => Promise<R>;
 
 export type BucketWatchOptions = {
   filter?: string;
@@ -24,13 +22,13 @@ export type BucketBackendOptions = {
 };
 
 export type BucketOptions = {
-  backend: Backend;
+  core: Core;
   name: string;
   options?: Partial<BucketBackendOptions>;
 };
 
 export class Bucket<T> extends Autodestructible {
-  private _backend: Backend;
+  private _core: Core;
   private _name: string;
   private _options: Partial<BucketBackendOptions>;
   private _kv!: KV;
@@ -39,18 +37,18 @@ export class Bucket<T> extends Autodestructible {
     super();
     
     const {
-      backend,
+      core,
       name,
       options: backendOptions = {},
     } = options;
     
-    this._backend = backend;
+    this._core = core;
     this._name = name;
     this._options = backendOptions;
   }
   
   public async init(): Promise<void> {
-    this._kv = await this._backend.js.views.kv(this._name.replaceAll('.', '_'), {
+    this._kv = await this._core.js.views.kv(this._name.replaceAll('.', '_'), {
       replicas: this._options.replicas,
       max_bytes: this._options.maxBytes,
       maxValueSize: this._options.maxValueSize,
@@ -83,77 +81,42 @@ export class Bucket<T> extends Autodestructible {
       return undefined;
     }
     
-    return this._backend.decode(entry.value) as T;
+    return this._core.decode(entry.value) as T;
   }
   
   public async put(key: string, value: T): Promise<void> {
-    await this._kv.put(key, this._backend.encode(value));
+    await this._kv.put(key, this._core.encode(value));
   }
   
   public async delete(key: string): Promise<void> {
     await this._kv.delete(key);
   }
   
-  public async mutate(
+  public async mutate<R>(
     key: string,
-    callback: MutateCallback<T>,
-  ): Promise<T> {
+    callback: BucketMutateCallback<T, R>,
+  ): Promise<R> {
     const entry = await this._kv.get(key);
     
     if (entry) {
-      const prev = (entry.value.length > 0) ? this._backend.decode(entry.value) as T : undefined;
-      const next = await callback(prev);
+      const prev = (entry.operation == 'PUT' && entry.value.length > 0)
+        ? this._core.decode(entry.value) as T
+        : undefined
+      ;
       
-      await this._kv.update(key, this._backend.encode(next), entry.revision);
-      
-      return next;
+      return await callback(prev, async next => {
+        await this._kv.update(key, this._core.encode(next), entry.revision);
+        
+        return next;
+      });
     } else {
-      const next = await callback(undefined);
-      
-      await this._kv.create(key, this._backend.encode(next));
-      
-      return next;
+      return await callback(undefined, async next => {
+        await this._kv.create(key, this._core.encode(next));
+        
+        return next;
+      });
     }
   }
-  
-  public async mutateUsing(
-    key: string,
-    callback: MutateUsingCallback<T>,
-  ): Promise<void> {
-    await retry(async () => {
-      const entry = await this._kv.get(key);
-      
-      if (entry) {
-        const prev = (entry.value.length > 0) ? this._backend.decode(entry.value) as T : undefined;
-        
-        await callback(prev, async next => {
-          await this._kv.update(key, this._backend.encode(next), entry.revision);
-        });
-      } else {
-        await callback(undefined, async next => {
-          await this._kv.create(key, this._backend.encode(next));
-        });
-      }
-    }, {
-      when: isWrongLastSequenceError,
-    });
-  }
-  
-  // public async maybeMutate(
-  //   key: string,
-  //   callback: MutateCallback<T>,
-  //   options?: BucketMutateOptions,
-  // ): Promise<void> {
-  //   try {
-  //     await this.mutate(key, callback, options);
-  //   } catch (err) {
-  //     if  {
-  //       return;
-  //     }
-      
-  //     throw err;
-  //   }
-  // }
   
   public async keys(filter?: string): Promise<string[]> {
     const iterator = await this._kv.keys(filter);
@@ -176,7 +139,7 @@ export class Bucket<T> extends Autodestructible {
     } = options ?? {};
     
     const watcher = new Watcher<T>({
-      backend: this._backend,
+      core: this._core,
       kv: this._kv,
       filter,
       callback,
@@ -189,47 +152,6 @@ export class Bucket<T> extends Autodestructible {
     }
     
     return this.use(watcher);
-  }
-  
-  public async lock(key: string, callback: AsyncCallback): Promise<void> {
-    try {
-      await retry(async () => {
-        const revision = await tryWithFallback(async () => {
-          return await this._kv.create(key, this._backend.encode(undefined));
-        }, async err => {
-          if (isWrongLastSequenceError(err)) {
-            throw new Error('oops');
-          }
-          
-          throw err;
-        });
-        
-        await anyway(async () => {
-          await callback();
-        }, async () => {
-          try {
-            await this._kv.delete(key, { previousSeq: revision });
-          } catch (err) {
-            if (isWrongLastSequenceError(err)) {
-              return;
-            }
-            
-            throw err;
-          }
-        });
-      }, {
-        when: err => err instanceof Error && err.message == 'oops',
-        // retries: 20,
-        retries: 0,
-        maxDelay: 2_000,
-      });
-    } catch (err) {
-      if (err instanceof Error && err.message == 'oops') {
-        throw new OvernatsError('lock failed', { details: { key } });
-      }
-      
-      throw err;
-    }
   }
 }
 
@@ -252,6 +174,20 @@ export class BucketSlice<T> {
     this._prefix = prefix;
   }
   
+  public slice<N = T>(prefix: string): BucketSlice<N> {
+    return new BucketSlice<N>({
+      parent: this._parent as Bucket<unknown>,
+      prefix: `${this._prefix}.${prefix}`,
+    });
+  }
+  
+  public cell<N = T>(key: string): BucketCell<N> {
+    return new BucketCell<N>({
+      parent: this._parent as Bucket<unknown>,
+      key: `${this._prefix}.${key}`,
+    });
+  }
+  
   public async get(key: string): Promise<T | undefined> {
     return await this._parent.get(`${this._prefix}.${key}`);
   }
@@ -264,21 +200,12 @@ export class BucketSlice<T> {
     await this._parent.delete(`${this._prefix}.${key}`);
   }
   
-  public async mutate(key: string, callback: MutateCallback<T>): Promise<T> {
+  public async mutate<R>(
+    key: string,
+    callback: BucketMutateCallback<T, R>,
+  ): Promise<R> {
     return await this._parent.mutate(`${this._prefix}.${key}`, callback);
   }
-  
-  public async mutateUsing(key: string, callback: MutateUsingCallback<T>): Promise<void> {
-    await this._parent.mutateUsing(`${this._prefix}.${key}`, callback);
-  }
-  
-  // public async maybeMutate(
-  //   key: string,
-  //   callback: MutateCallback<T>,
-  //   options?: BucketMutateOptions,
-  // ): Promise<void> {
-  //   await this._parent.maybeMutate(`${this._prefix}.${key}`, callback, options);
-  // }
   
   public async keys(filter?: string): Promise<string[]> {
     return await this._parent.keys(`${this._prefix}.${filter ?? '>'}`);
@@ -330,20 +257,9 @@ export class BucketCell<T> {
     await this._parent.delete(this._key);
   }
   
-  public async mutate(callback: MutateCallback<T>): Promise<T> {
+  public async mutate<R>(callback: BucketMutateCallback<T, R>): Promise<R> {
     return await this._parent.mutate(this._key, callback);
   }
-  
-  public async mutateUsing(callback: MutateUsingCallback<T>): Promise<void> {
-    await this._parent.mutateUsing(this._key, callback);
-  }
-  
-  // public async maybeMutate(
-  //   callback: MutateCallback<T>,
-  //   options?: BucketMutateOptions,
-  // ): Promise<void> {
-  //   await this._parent.maybeMutate(this._key, callback, options);
-  // }
   
   public async watch(
     callback: WatcherCallback<T>,

@@ -1,8 +1,8 @@
+import { type CallbackSync } from 'ominous';
 import { type QueuedIterator, type KvEntry, type KV } from 'nats';
-import { type Callback } from './types';
 import { OvernatsError } from './errors';
 import { type Listener } from './listener';
-import { type Backend } from './backend';
+import { type Core } from './core';
 
 export type UpdatePut<T> = {
   operation: 'PUT',
@@ -24,14 +24,14 @@ export type Update<T> = UpdatePut<T> | UpdateDelete;
 export type WatcherCallback<T> = (update: Update<T>) => Promise<void>;
 
 export type WatcherOptions<T> = {
-  backend: Backend;
+  core: Core;
   kv: KV,
   filter?: string;
   callback: WatcherCallback<T>;
 };
 
 export class Watcher<T> {
-  private _backend: Backend;
+  private _core: Core;
   private _kv: KV;
   private _filter?: string;
   private _callback: WatcherCallback<T>;
@@ -40,13 +40,13 @@ export class Watcher<T> {
   
   constructor(options: WatcherOptions<T>) {
     const {
-      backend,
+      core,
       kv,
       filter,
       callback,
     } = options;
     
-    this._backend = backend;
+    this._core = core;
     this._kv = kv;
     this._filter = filter;
     this._callback = callback;
@@ -54,7 +54,7 @@ export class Watcher<T> {
   
   public async init(): Promise<void> {
     let online = false;
-    let resume: Callback | undefined;
+    let resume: CallbackSync | undefined;
     
     this._updates = await this._kv.watch({
       key: this._filter,
@@ -66,9 +66,9 @@ export class Watcher<T> {
         }
       },
     });
-    this._updatesListener = await this._backend.listen('watcher', this._updates, async entry => {
+    this._updatesListener = await this._core.listen('watcher', this._updates, async entry => {
       try {
-        const update = entryToUpdate<T>(this._backend, entry, online);
+        const update = entryToUpdate<T>(this._core, entry, online);
         
         await this._callback(update);
       } catch (err) {
@@ -89,14 +89,14 @@ export class Watcher<T> {
   }
 }
 
-function entryToUpdate<T>(backend: Backend, entry: KvEntry, online: boolean): Update<T> {
+function entryToUpdate<T>(core: Core, entry: KvEntry, online: boolean): Update<T> {
   if (entry.operation == 'PUT') {
     return {
       operation: 'PUT',
       revision: entry.revision,
       online,
       key: entry.key,
-      value: backend.decode(entry.value) as T,
+      value: core.decode(entry.value) as T,
     };
   }
   

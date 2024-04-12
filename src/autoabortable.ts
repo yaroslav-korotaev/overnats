@@ -1,4 +1,4 @@
-import { anyway } from './utils';
+import { anyway } from 'ominous';
 
 export type AbortableCallback<T> = (signal: AbortSignal) => Promise<T>;
 

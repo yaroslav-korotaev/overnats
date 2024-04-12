@@ -1,6 +1,5 @@
-import { type Destructible } from './types';
+import { type Destructible, Mutex } from 'ominous';
 import { type CompareCallback, defaultCompare } from './utils';
-import { Mutex } from './utils';
 
 export type SummonCallback<P> = (params: P) => Promise<Destructible>;
 

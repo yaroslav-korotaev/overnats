@@ -1,22 +1,16 @@
-export type Callback = () => void;
-export type AsyncCallback = () => Promise<void>;
-export type UseCallback<T> = (value: T) => Promise<void>;
-export type ReturnCallback<T> = () => Promise<T>;
-export type MutateCallback<T> = (value: T | undefined) => Promise<T>;
-export type MutateUsingCallback<T> = (value: T | undefined, use: UseCallback<T>) => Promise<void>;
-export type ErrorCallback = (err: unknown) => void;
+import { type ErrorCallback } from 'ominous';
+import { type StreamOptions } from './stream';
+
+export type Headers = Record<string, string | string[]>;
 
 export type Trapdoor = {
   uncaughtException: ErrorCallback;
 };
 
-export type Destructible = {
-  destroy(): Promise<void>;
-};
-
 export type OvernatsGlobalOptions = {
   heartbeatInterval: number;
   lockTimeout: number;
+  streamDefaults?: Partial<StreamOptions>;
 };
 
 export type SubscribeParams<P> = {

@@ -1,4 +1,4 @@
-import { type Destructible } from './types';
+import { type Destructible } from 'ominous';
 
 export class Autodestructible {
   private _destructibles: Destructible[];

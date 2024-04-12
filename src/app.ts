@@ -1,38 +1,37 @@
+import { Container } from 'ominous';
 import { Autodestructible } from './autodestructible';
-import { type Backend } from './backend';
+import { type Core } from './core';
 import { Client } from './client';
 
 export type AppOptions = {
-  backend: Backend;
-  name: string;
+  core: Core;
 };
 
 export class App extends Autodestructible {
-  private _backend: Backend;
-  private _name: string;
+  private _core: Core;
   
   constructor(options: AppOptions) {
     super();
     
     const {
-      backend,
-      name,
+      core,
     } = options;
     
-    this._backend = this.use(backend);
-    this._name = name;
+    this._core = this.use(core);
   }
   
-  public client(name?: string): Client {
+  public client(name: string): Client {
     const client = new Client({
-      backend: this._backend,
-      name: `${this._name}.${name || 'default'}`,
+      telemetry: this._core.telemetry.child(name),
+      core: this._core,
+      name,
+      container: new Container(),
     });
     
     return this.use(client);
   }
   
-  public get backend(): Backend {
-    return this._backend;
+  public get core(): Core {
+    return this._core;
   }
 }

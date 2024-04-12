@@ -1,6 +1,6 @@
 import { serializeError } from './errors';
 import { Autodestructible } from './autodestructible';
-import { type Backend } from './backend';
+import { type Core } from './core';
 import { type SubscriptionMessage } from './subscription';
 
 export type ServiceMethodRequest<T> = {
@@ -19,29 +19,29 @@ export type ServiceMethodContext<P, R> = {
 export type ServiceMethodCallback<P, R> = (ctx: ServiceMethodContext<P, R>) => Promise<void>;
 
 export type ServiceOptions = {
-  backend: Backend;
+  core: Core;
   name: string;
 };
 
 export class Service extends Autodestructible {
-  private _backend: Backend;
+  private _core: Core;
   private _name: string;
   
   constructor(options: ServiceOptions) {
     super();
     
     const {
-      backend,
+      core,
       name,
     } = options;
     
-    this._backend = backend;
+    this._core = core;
     this._name = name;
   }
   
   public async method<P, R>(name: string, callback: ServiceMethodCallback<P, R>): Promise<void> {
     const subject = `${this._name}.${name}`;
-    const subscription = await this._backend.subscribe<P>(subject, async message => {
+    const subscription = await this._core.subscribe<P>(subject, async message => {
       const ctx = context<P, R>(message);
       
       try {
@@ -56,6 +56,10 @@ export class Service extends Autodestructible {
     this.use(subscription);
   }
 }
+
+export type ServiceFactory = {
+  (name: string): Promise<Service>;
+};
 
 function context<P, R>(message: SubscriptionMessage<P>): ServiceMethodContext<P, R> {
   return {

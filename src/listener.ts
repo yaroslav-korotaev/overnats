@@ -1,4 +1,5 @@
-import { type UseCallback, type Trapdoor } from './types';
+import { type UseCallback } from 'ominous';
+import { type Trapdoor } from './types';
 import { OvernatsError } from './errors';
 
 export type ListenerOptions<T> = {

@@ -1,7 +1,7 @@
 import { type Subscription as NatsSubscription, Msg as NatsMsg } from 'nats';
 import { OvernatsError } from './errors';
 import { type Listener } from './listener';
-import { type Backend } from './backend';
+import { type Core } from './core';
 
 export type SubscriptionBackendOptions = {
   queue?: string | undefined;
@@ -18,14 +18,14 @@ export type SubscriptionMessage<T> = {
 export type SubscriptionCallback<T> = (message: SubscriptionMessage<T>) => Promise<void>;
 
 export type SubscriptionOptions<T> = {
-  backend: Backend;
+  core: Core;
   subject: string;
   options?: SubscriptionBackendOptions;
   callback: SubscriptionCallback<T>;
 };
 
 export class Subscription<T> {
-  private _backend: Backend;
+  private _core: Core;
   private _subject: string;
   private _options?: SubscriptionBackendOptions;
   private _callback: SubscriptionCallback<T>;
@@ -34,30 +34,32 @@ export class Subscription<T> {
   
   constructor(options: SubscriptionOptions<T>) {
     const {
-      backend,
+      core,
       subject,
       options: backendOptions,
       callback,
     } = options;
     
-    this._backend = backend;
+    this._core = core;
     this._subject = subject;
     this._options = backendOptions;
     this._callback = callback;
   }
   
   public async init(): Promise<void> {
-    this._subscription = this._backend.core.subscribe(this._subject, this._options);
-    this._subscriptionListener = await this._backend.listen(
+    this._core.telemetry.trace({ subject: this._subject }, 'listen');
+    
+    this._subscription = this._core.nats.subscribe(this._subject, this._options);
+    this._subscriptionListener = await this._core.listen(
       `subscription.${this._subject}`,
       this._subscription,
       async message => {
         try {
           await this._callback({
             subject: message.subject,
-            data: this._backend.decode(message.data) as T,
+            data: this._core.decode(message.data) as T,
             respond: data => {
-              message.respond(this._backend.encode(data));
+              message.respond(this._core.encode(data));
             },
           });
         } catch (err) {

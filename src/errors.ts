@@ -50,5 +50,5 @@ export function deserializeError(value: unknown): OvernatsError {
     return new OvernatsError(value.message, { details: value.details });
   }
   
-  return new OvernatsError('unknown error');
+  return new OvernatsError('unknown error', { details: { value } });
 }
